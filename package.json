@@ -1,0 +1,50 @@
+{
+  "name": "skypeforhoo",
+  "version": "0.1.0",
+  "description": "A TypeScript SDK for Skype for Business discovery, authentication and UCWA.",
+  "type": "module",
+  "license": "MIT",
+  "author": "OpenHoo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openhoo/skypeforhoo.git"
+  },
+  "homepage": "https://github.com/openhoo/skypeforhoo#readme",
+  "bugs": "https://github.com/openhoo/skypeforhoo/issues",
+  "keywords": [
+    "skype-for-business",
+    "ucwa",
+    "typescript",
+    "sdk",
+    "openhoo"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/test/*.test.js",
+    "test:types": "tsc -p tsconfig.consumer-node.json && tsc -p tsconfig.consumer-browser.json",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:types",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2"
+  }
+}

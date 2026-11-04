@@ -1,0 +1,7 @@
+{
+  "referenceCommit": "d6b0925033cc5d8e29e15fbb425fe22b9ac6a038",
+  "referencePages": 234,
+  "uniqueResourceNames": 234,
+  "referenceMethods": 256,
+  "caveat": "Public resource reference coverage only; no private extensions or native media implementation."
+}
