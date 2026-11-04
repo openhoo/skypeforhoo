@@ -45,7 +45,7 @@ export class SkypeForHoo {
     });
   }
 
-  async connect(application: ApplicationOptions = { userAgent: 'skypeforhoo/0.2.0' }, signal?: AbortSignal): Promise<UcwaSession> {
+  async connect(application: ApplicationOptions = { userAgent: 'skypeforhoo/0.2.1' }, signal?: AbortSignal): Promise<UcwaSession> {
     const discovery = await this.discover(signal);
     return UcwaSession.create(this.transport, discovery.applicationsUrl, application, signal, {
       sipAddress: this.#options.sipAddress,
