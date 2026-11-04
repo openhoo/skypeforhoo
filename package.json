@@ -1,6 +1,6 @@
 {
   "name": "skypeforhoo",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A TypeScript SDK for Skype for Business discovery, authentication, UCWA and media signaling.",
   "type": "module",
   "license": "MIT",

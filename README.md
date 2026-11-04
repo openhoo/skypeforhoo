@@ -6,18 +6,18 @@ The SDK follows links returned by the server. It also exposes resource operation
 
 ## Status
 
-Version **0.2.0** adds typed audio/video signaling, conditional application-sharing operations, and a lifecycle contract for an application-supplied media backend. Synthetic protocol tests exercise the supported flows. Public service discovery has been checked against a real deployment. **Authenticated enterprise login, message delivery, and native media have not yet been qualified against a real server.** The package does not bundle a media engine or transmit screen, camera, or audio frames by itself.
+Version **0.2.1** fixes authentication parsing, token acquisition races, stale session capabilities, late message writes, and response cleanup cancellation. The SDK includes typed audio/video signaling, conditional application-sharing operations, and a lifecycle contract for an application-supplied media backend. Synthetic protocol tests exercise the supported flows. Public service discovery has been checked against a real deployment. **Authenticated enterprise login, message delivery, and native media have not yet been qualified against a real server.** The package does not bundle a media engine or transmit screen, camera, or audio frames by itself.
 
-See the [v0.2.0 release notes](docs/releases/v0.2.0.md) for the implementation and qualification record.
+See the [v0.2.1 release notes](docs/releases/v0.2.1.md) for the fixes and verification record, and the [v0.2.0 release notes](docs/releases/v0.2.0.md) for the media implementation and qualification record.
 
 Supported authentication includes supplied Bearer tokens and the documented on-premises `MsRtcOAuth` password grant. Deployments that use WebTicket/WS-Trust, Windows integrated authentication, AD FS, MFA, or another identity flow need a matching `AuthProvider`. Entering a username and password in an official client does not establish which token flow its server uses.
 
 ## Install
 
-Download the built package from the [GitHub release](https://github.com/openhoo/skypeforhoo/releases/tag/v0.2.0), or install its release asset directly:
+Download the built package from the [GitHub release](https://github.com/openhoo/skypeforhoo/releases/tag/v0.2.1), or install its release asset directly:
 
 ```sh
-npm install https://github.com/openhoo/skypeforhoo/releases/download/v0.2.0/skypeforhoo-0.2.0.tgz
+npm install https://github.com/openhoo/skypeforhoo/releases/download/v0.2.1/skypeforhoo-0.2.1.tgz
 ```
 
 The package is ESM, includes TypeScript declarations, and has **no runtime dependencies**. Node.js 22 or later is supported. Browser and desktop hosts can inject a Fetch-compatible transport; their CORS, authentication-header access, and native transport behavior need to be validated for the selected deployment.

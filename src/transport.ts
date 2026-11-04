@@ -120,7 +120,7 @@ export class UcwaTransport implements Transport {
         throw new ProtocolError('A browser-hidden redirect cannot be followed safely. Use a native fetch adapter.');
       }
       if ([301, 302, 303, 307, 308].includes(response.status)) {
-        await response.body?.cancel();
+        await cancelResponseBody(response, signal);
         const location = response.headers.get('Location');
         if (!location) throw new ProtocolError('The redirect response has no Location header.');
         if (method !== 'GET' && method !== 'HEAD') {
@@ -136,13 +136,20 @@ export class UcwaTransport implements Transport {
       if (response.status === 401 && auth && !challenged) {
         challenged = true;
         const challenge = response.headers.get('WWW-Authenticate') ?? '';
-        auth.invalidate?.(url.toString());
+        let authorizationFailed = true;
         try {
+          auth.invalidate?.(url.toString());
           authorization = await withSignal(auth.getAuthorization({ ...context, challenge, response }), signal);
+          if (!authorization) throw new AuthenticationError('The authentication provider did not return authorization for the server challenge.', challenge);
+          authorizationFailed = false;
         } finally {
-          await response.body?.cancel();
+          try {
+            await cancelResponseBody(response, signal);
+          } catch (error) {
+            // Disposal must not hide an existing authentication/cancellation failure.
+            if (!authorizationFailed) throw error;
+          }
         }
-        if (!authorization) throw new AuthenticationError('The authentication provider did not return authorization for the server challenge.', challenge);
         continue;
       }
       const data = await withSignal(parseResponse(response, method), signal);
@@ -161,11 +168,19 @@ function rejectAmbientCredentials(headers: Headers): void {
   }
 }
 
+/** Keep observing late cleanup while cancellation bounds the request's wait. */
+function cancelResponseBody(response: Response, signal: AbortSignal): Promise<void> {
+  return withSignal(Promise.resolve().then(() => response.body?.cancel()), signal);
+}
+
 /** Bound caller-visible latency even when a custom provider ignores cancellation. */
 function withSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'));
+    const abort = () => {
+      signal.removeEventListener('abort', abort);
+      reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'));
+    };
     signal.addEventListener('abort', abort, { once: true });
     promise.then(
       (value) => { signal.removeEventListener('abort', abort); resolve(value); },

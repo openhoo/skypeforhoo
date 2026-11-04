@@ -89,6 +89,7 @@ export class UcwaSession extends ResourceClient {
   private cursor: string | undefined;
   private closing: Promise<void> | undefined;
   private readonly hubs = new Map<string, ResourceReference>();
+  private hubGeneration = 0;
   private useEmbeddedHubs = true;
 
   private constructor(transport: Transport, application: ResourceReference, options: UcwaSessionOptions = {}) {
@@ -162,19 +163,28 @@ export class UcwaSession extends ResourceClient {
   }
 
   private async hub(relation: string, signal?: AbortSignal): Promise<ResourceReference> {
-    this.assertUsable();
-    const cached = this.hubs.get(relation);
-    if (cached) return cached;
-    const embedded = embeddedResource(this.application, relation);
-    const resource = this.useEmbeddedHubs && embedded
-      ? embedded
-      : hasLink(this.application.data, relation)
-        ? await this.follow(this.application, relation, signal)
-        : embedded
-          ? await this.read(embedded.url, signal)
-          : await this.follow(this.application, relation, signal);
-    this.hubs.set(relation, resource);
-    return resource;
+    while (true) {
+      this.assertUsable();
+      signal?.throwIfAborted();
+      const generation = this.hubGeneration;
+      const cached = this.hubs.get(relation);
+      if (cached) return cached;
+      const embedded = embeddedResource(this.application, relation);
+      const resource = this.useEmbeddedHubs && embedded
+        ? embedded
+        : hasLink(this.application.data, relation)
+          ? await this.follow(this.application, relation, signal)
+          : embedded
+            ? await this.read(embedded.url, signal)
+            : await this.follow(this.application, relation, signal);
+      this.assertUsable();
+      signal?.throwIfAborted();
+      // A successful availability change invalidates reads already in flight,
+      // including the resource returned to their original waiting operation.
+      if (generation !== this.hubGeneration) continue;
+      this.hubs.set(relation, resource);
+      return resource;
+    }
   }
 
   me(signal?: AbortSignal): Promise<ResourceReference> { return this.hub('me', signal); }
@@ -231,6 +241,7 @@ export class UcwaSession extends ResourceClient {
       ...(signal ? { signal } : {}),
     });
     // makeMeAvailable changes advertised links on me/communication. Do not retain stale hubs.
+    this.hubGeneration++;
     this.hubs.clear();
     this.useEmbeddedHubs = false;
   }
@@ -261,6 +272,8 @@ export class UcwaSession extends ResourceClient {
   async sendMessage(resource: ResourceReference, message: string, options: SendMessageOptions = {}): Promise<HttpResult> {
     this.assertUsable();
     const messaging = await this.messaging(resource, options.signal);
+    this.assertUsable();
+    options.signal?.throwIfAborted();
     const url = new URL(getLink(messaging.data, 'sendMessage', messaging.url));
     url.searchParams.set('operationId', operationId(options.operationId));
     return this.transport.request(url.href, {

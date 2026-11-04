@@ -73,7 +73,8 @@ export function passwordAuth(options: PasswordAuthOptions): AuthProvider {
         };
         current.promise = acquireToken(context, endpoint, options, controller.signal)
           .then(({ token, lifetimeMs }) => {
-            if (lifetimeMs > 0) {
+            // An adapter can finish after cancellation or after a newer endpoint wins.
+            if (lifetimeMs > 0 && !controller.signal.aborted && pending.get(origin) === current) {
               const skew = Math.min(30_000, lifetimeMs / 10);
               cache.set(origin, { token, usableUntil: Date.now() + lifetimeMs - skew });
             }
@@ -112,22 +113,34 @@ function httpsUrl(value: string, base?: string): URL {
 }
 
 function passwordEndpoint(challenge: string, base: string): string {
-  const match = /\bMsRtcOAuth\s+/i.exec(challenge);
-  if (!match) {
+  let fields: string[] | undefined;
+  for (const field of authenticationFields(challenge)) {
+    const value = field.trim();
+    // Optional whitespace before '=' still belongs to an authentication parameter.
+    const parameter = /^[!#$%&'*+\-.^_`|~\da-z]+[ \t]*=/i.test(value);
+    const scheme = parameter ? null : /^([!#$%&'*+\-.^_`|~\da-z]+)(?:[ \t]+(.*))?$/i.exec(value);
+    if (scheme) {
+      // A scheme starts at a field boundary, never inside another scheme's value.
+      if (fields) break;
+      if (scheme[1]!.toLowerCase() === 'msrtcoauth') fields = [scheme[2] ?? ''];
+    } else if (fields) {
+      fields.push(field);
+    }
+  }
+  if (!fields) {
     throw new AuthenticationError(
       'The server did not advertise an MsRtcOAuth password grant. Use bearerAuth or a custom AuthProvider for its Bearer, Windows, WebTicket or federated sign-in flow.',
       challenge,
     );
   }
   const parameters = new Map<string, string>();
-  let fields = challenge.slice(match.index + match[0].length);
-  const pattern = /^\s*,?\s*([a-z_][a-z0-9_-]*)\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^,\s]+))/i;
-  for (;;) {
-    const field = pattern.exec(fields);
-    // A new authentication scheme is not another MsRtcOAuth parameter.
-    if (!field) break;
-    parameters.set(field[1]!.toLowerCase(), (field[2] ?? field[3] ?? '').replace(/\\(.)/g, '$1'));
-    fields = fields.slice(field[0].length);
+  const pattern = /^\s*([a-z_][a-z0-9_-]*)\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^,\s"]+))\s*$/i;
+  for (const value of fields) {
+    const field = pattern.exec(value);
+    if (!field) throw new AuthenticationError('The MsRtcOAuth challenge has invalid authentication parameters.', challenge);
+    const name = field[1]!.toLowerCase();
+    if (parameters.has(name)) throw new AuthenticationError('The MsRtcOAuth challenge contains duplicate authentication parameters.', challenge);
+    parameters.set(name, (field[2] ?? field[3] ?? '').replace(/\\(.)/g, '$1'));
   }
   const href = parameters.get('href');
   const grants = parameters.get('grant_type')?.split(',').map((grant) => grant.trim().toLowerCase());
@@ -135,6 +148,26 @@ function passwordEndpoint(challenge: string, base: string): string {
     throw new AuthenticationError('The MsRtcOAuth challenge does not advertise an endpoint supporting the password grant.', challenge);
   }
   return httpsUrl(href, base).href;
+}
+
+/** Split challenge/parameter fields while preserving quoted commas and escaped quotes. */
+function authenticationFields(challenge: string): string[] {
+  const fields: string[] = [];
+  let quoted = false;
+  let start = 0;
+  for (let index = 0; index < challenge.length; index++) {
+    const character = challenge[index];
+    if (quoted && character === '\\') {
+      index++;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (!quoted && character === ',') {
+      fields.push(challenge.slice(start, index));
+      start = index + 1;
+    }
+  }
+  fields.push(challenge.slice(start));
+  return fields;
 }
 
 async function acquireToken(
