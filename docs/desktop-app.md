@@ -1,10 +1,10 @@
 # Desktop app direction
 
-Status: design brief for the application that follows the SDK. Research checked on November 4, 2026. The desktop application is not implemented in this repository.
+Status: design brief for the macOS and Windows application that follows the SDK. Research checked on November 4, 2026. The desktop application is not implemented in this repository. SDK `0.2.0` supplies typed Skype signaling and a media backend contract; a working native media backend remains to be built and qualified.
 
 ## Requested stack
 
-- Tauri desktop shell and native integration.
+- Tauri desktop shell and native integration for macOS and Windows.
 - React with TypeScript for the interface.
 - shadcn/ui, including its chat components.
 - A Skype for Business connector using `skypeforhoo`.
@@ -68,7 +68,7 @@ Suggested application operations are `connect`, `disconnect`, `listConversations
 
 The public Teamwire SDK documentation describes a Python bot connection with `appid`, `secret`, and `host`. It does not establish that a TypeScript client can sign in as a human user through the same flow. Before app integration, choose and validate a Teamwire user connector separately; do not treat a bot's credentials as interchangeable with a person's account. Source: [Teamwire SDK connection reference](https://sdk.teamwire.eu/api/2.0/connection/).
 
-`skypeforhoo` supplies UCWA discovery, authentication integration, resources, and events. A successful HTTP request does not prove end-to-end delivery or audio compatibility. The app must correlate operation results with protocol events and expose incomplete or failed operations accurately.
+`skypeforhoo` supplies UCWA discovery, authentication integration, resources, events, typed media signaling, and an injectable screen-sharing lifecycle. A successful HTTP request does not prove end-to-end delivery or audio compatibility. The app must correlate operation results with protocol events and expose incomplete or failed operations accurately.
 
 ## Tauri and SDK execution
 
@@ -83,11 +83,14 @@ flowchart LR
   Connectors --> Skype[skypeforhoo]
   Connectors --> Teamwire[Teamwire adapter]
   Native --> Vault[OS credential store]
+  Skype <-->|typed media lifecycle| Media[Native Skype media backend]
+  Media --> Capture[Capture and playback surfaces]
   Skype --> SFB[Skype for Business services]
+  Media <-->|negotiated media transport| SFB
   Teamwire --> TW[Teamwire services]
 ```
 
-Keep stored passwords, refresh tokens, and persistent session secrets in native credential storage. Pass account handles and application data to React. Use a native account sign-in flow where possible; if a web form collects a password, keep it transient and avoid persisting it in application state or logs. Verify macOS, Windows, and Linux credential-store behavior before release. Tauri Stronghold is an encrypted vault option with its own unlock design; it is a different choice from an OS keychain. Source: [Stronghold](https://tauri.app/plugin/stronghold/).
+Keep stored passwords, refresh tokens, and persistent session secrets in native credential storage. Pass account handles and application data to React. Use a native account sign-in flow where possible; if a web form collects a password, keep it transient and avoid persisting it in application state or logs. Verify credential-store behavior on macOS and Windows before release. Tauri Stronghold is an encrypted vault option with its own unlock design; it is a different choice from an OS keychain. Source: [Stronghold](https://tauri.app/plugin/stronghold/).
 
 For an alternative where SDK orchestration runs in the WebView, inject a native HTTP transport and keep authentication in a native broker. That requires explicit handling of credentials and response headers at the broker boundary. Tauri's HTTP plugin provides native HTTP requests and URL scopes; it does not automatically solve SSO, certificate trust, token audience, or media compatibility. Source: [HTTP client plugin](https://tauri.app/plugin/http-client/).
 
@@ -97,13 +100,19 @@ Use system certificate trust and explicitly approved service origins. Keep redir
 
 Treat the two providers as separate call engines behind one call UI. Signaling, media credentials, codecs, conferencing, screen sharing, and device permissions need independent qualification. Do not infer media compatibility from a shared-looking call button or a successful REST call. The first useful app milestone is reliable sign-in, contacts, receiving messages, sending messages, and reconnecting on each provider.
 
+For Skype, inject one native `MediaEngineFactory` per connected account. The SDK's `session.media` methods exchange signaling and SDP; `session.screenSharing` checks the installed backend's capabilities and owns start/receive/stop lifecycle. Desktop sharing, selected-window sharing, viewing, and remote control must have separate capability results. The package includes no capture, codec, frame transport, or viewing surface. Keep those in the backend and native UI integration, with a separately qualified macOS and Windows implementation. See the [media protocol and backend guide](media.md).
+
+Run the SDK's single `session.events()` consumer as a supervised account task. It automatically awaits the initialized backend's optional `handleEvents()` hook before yielding a batch. Both backend and application processing must tolerate replay, and the backend must finish each batch without waiting for future events. Initialize inbound-media support through a capability query before enabling it; event forwarding does not create an unused backend.
+
+Use `mediaCleanupTimeoutMs` to bound each media close or stop-all attempt; the default is 10 seconds. `MediaCleanupTimeoutError` reports pending cleanup. Keep that state visible and allow a retry or native backend recovery instead of showing a completed stop. Account logout attempts native media cleanup and UCWA registration deletion concurrently, and reports failures from either operation. Verify that capture ends during cancellation, remote termination, logout, and application exit on both platforms.
+
 Default to displaying both providers together while sending each message only to the selected conversation's provider. Cross-provider forwarding or bridging would be a separate explicit feature. Keep local caches, drafts, search results, connection status, and logout behavior scoped to an account.
 
 ## Implementation sequence
 
 1. Publish and validate the `skypeforhoo` SDK with synthetic fixtures and an explicit record of real-server qualification.
 2. Select and validate the Teamwire user connector and its supported API versions.
-3. Build a Tauri shell and React UI with synthetic conversations using the official shadcn chat primitives.
+3. Build the macOS and Windows Tauri shell and React UI with synthetic conversations using the official shadcn chat primitives.
 4. Add account commands and the connector process, then connect one provider at a time.
 5. Qualify receipt semantics, history, reconnect, credential storage, keyboard/screen-reader behavior, and desktop notifications.
 6. Add provider-specific attachments and calls after their protocol and media behavior is proven.

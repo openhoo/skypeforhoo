@@ -1,4 +1,6 @@
 import { HttpError, MissingLinkError, ProtocolError } from './errors.js';
+import { SkypeForBusinessMedia } from './media.js';
+import { ScreenSharingController, type MediaEngineFactory } from './media-engine.js';
 import {
   embeddedResource,
   getLink,
@@ -21,7 +23,7 @@ export type MessageFormat = 'Plain' | 'Html';
 export interface MakeAvailableOptions {
   signInAs?: PreferredAvailability;
   supportedMessageFormats?: MessageFormat[];
-  /** Messaging is the default. Audio/video media handling is outside this SDK. */
+  /** Messaging is the default. Advertise other modalities only with a compatible media backend. */
   supportedModalities?: string[];
   audioPreference?: 'PhoneAudio' | 'VoipAudio';
   phoneNumber?: string;
@@ -55,6 +57,14 @@ export interface EventOptions {
   signal?: AbortSignal;
 }
 
+/** Host-owned media integration; these options are never sent to the UCWA server. */
+export interface UcwaSessionOptions {
+  mediaEngine?: MediaEngineFactory;
+  sipAddress?: string;
+  /** Bound native cleanup attempts. Default: 10 seconds; unresolved cleanup remains observable. */
+  mediaCleanupTimeoutMs?: number;
+}
+
 function operationId(value?: string): string {
   const id = value ?? globalThis.crypto.randomUUID();
   if (id.length === 0 || id.length > 50) throw new TypeError('operationId must contain 1 to 50 characters.');
@@ -71,6 +81,8 @@ function dataUri(message: string, format: MessageFormat): string {
 /** One UCWA application registration and its server-advertised capabilities. */
 export class UcwaSession extends ResourceClient {
   readonly application: ResourceReference;
+  readonly media: SkypeForBusinessMedia;
+  readonly screenSharing: ScreenSharingController;
   private readonly lifetime = new AbortController();
   private closed = false;
   private polling = false;
@@ -79,9 +91,20 @@ export class UcwaSession extends ResourceClient {
   private readonly hubs = new Map<string, ResourceReference>();
   private useEmbeddedHubs = true;
 
-  private constructor(transport: Transport, application: ResourceReference) {
+  private constructor(transport: Transport, application: ResourceReference, options: UcwaSessionOptions = {}) {
     super(transport);
     this.application = application;
+    this.media = new SkypeForBusinessMedia(this);
+    this.screenSharing = new ScreenSharingController({
+      ...(options.mediaEngine ? { engineFactory: options.mediaEngine } : {}),
+      ...(options.mediaCleanupTimeoutMs === undefined ? {} : { cleanupTimeoutMs: options.mediaCleanupTimeoutMs }),
+      context: {
+        application,
+        signaling: this.media,
+        ...(options.sipAddress ? { sipAddress: options.sipAddress } : {}),
+      },
+      signal: this.lifetime.signal,
+    });
     if (hasLink(application.data, 'events')) this.cursor = getLink(application.data, 'events', application.url);
   }
 
@@ -90,7 +113,15 @@ export class UcwaSession extends ResourceClient {
     applicationsUrl: string,
     options: ApplicationOptions,
     signal?: AbortSignal,
+    sessionOptions: UcwaSessionOptions = {},
   ): Promise<UcwaSession> {
+    if (sessionOptions.mediaCleanupTimeoutMs !== undefined && (
+      !Number.isInteger(sessionOptions.mediaCleanupTimeoutMs) ||
+      sessionOptions.mediaCleanupTimeoutMs < 1 || sessionOptions.mediaCleanupTimeoutMs > 2_147_483_647
+    )) throw new TypeError('mediaCleanupTimeoutMs must be an integer from 1 to 2147483647.');
+    if (sessionOptions.mediaEngine !== undefined && typeof sessionOptions.mediaEngine !== 'function') {
+      throw new TypeError('mediaEngine must be a compatible media engine factory.');
+    }
     const body = {
       ...options,
       culture: options.culture ?? 'en-US',
@@ -118,7 +149,7 @@ export class UcwaSession extends ResourceClient {
       if (!location) throw new ProtocolError('Application creation returned neither a resource nor a Location header.');
       reference = requireResource(await transport.request<UcwaResource>(new URL(location, result.url).href, signal ? { signal } : {}));
     }
-    return new UcwaSession(transport, reference);
+    return new UcwaSession(transport, reference, sessionOptions);
   }
 
   protected override assertUsable(): void {
@@ -179,6 +210,14 @@ export class UcwaSession extends ResourceClient {
     await this.invoke(me, 'presence', {
       method: 'POST',
       ...(availability === undefined ? {} : { json: { availability } }),
+      ...(signal ? { signal } : {}),
+    });
+  }
+
+  /** Report actual host activity; the host owns presence and idle behavior. */
+  async reportActivity(signal?: AbortSignal): Promise<void> {
+    await this.invoke(await this.me(signal), 'reportMyActivity', {
+      method: 'POST',
       ...(signal ? { signal } : {}),
     });
   }
@@ -268,6 +307,13 @@ export class UcwaSession extends ResourceClient {
         if (result.data === undefined) return;
         const batch = requireResource(result).data;
         const next = hasLink(batch, 'next') ? getLink(batch, 'next', result.url) : undefined;
+        try {
+          await this.screenSharing.handleEvents(batch, cancellation.signal);
+        } catch (error) {
+          if (this.closed && cancellation.signal.aborted) return;
+          throw error;
+        }
+        if (this.closed) return;
         yield batch;
         // Resuming the consumer commits the preceding batch. return()/break or
         // an exception in its handler leaves the old cursor available for replay.
@@ -286,14 +332,25 @@ export class UcwaSession extends ResourceClient {
     this.closed = true;
     this.lifetime.abort();
     this.closing = (async () => {
-      try {
-        await this.transport.request(this.application.url, { method: 'DELETE', ...(signal ? { signal } : {}) });
-      } catch (error) {
-        if (error instanceof HttpError && (error.status === 404 || error.status === 410)) return;
-        this.closing = undefined;
-        throw error;
+      const errors: unknown[] = [];
+      // Remove the server registration even when a host media backend cannot clean up.
+      const [media, registration] = await Promise.allSettled([
+        Promise.resolve().then(() => this.screenSharing.close()),
+        Promise.resolve().then(() => this.transport.request(this.application.url, { method: 'DELETE', ...(signal ? { signal } : {}) })),
+      ]);
+      if (media.status === 'rejected') errors.push(media.reason as unknown);
+      if (registration.status === 'rejected') {
+        const error: unknown = registration.reason;
+        if (!(error instanceof HttpError && (error.status === 404 || error.status === 410))) errors.push(error);
       }
-    })();
+      if (errors.length > 0) {
+        if (errors.length === 1) throw errors[0];
+        throw new AggregateError(errors, 'Media cleanup and UCWA application deletion failed.');
+      }
+    })().catch((error: unknown) => {
+      this.closing = undefined;
+      throw error;
+    });
     return this.closing;
   }
 }

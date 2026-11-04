@@ -1,5 +1,6 @@
 import { defaultDiscoveryUrls, discover, normalizeSipAddress } from './discovery.js';
 import { UcwaSession } from './session.js';
+import type { MediaEngineFactory } from './media-engine.js';
 import { httpsUrl, UcwaTransport } from './transport.js';
 import type { ApplicationOptions, AuthProvider, DiscoveryResult, Fetch, TransportOptions } from './types.js';
 
@@ -13,6 +14,10 @@ export interface SkypeForHooOptions {
   trustedOrigins?: readonly string[];
   trustOrigin?: TransportOptions['trustOrigin'];
   timeoutMs?: number;
+  /** Construct one compatible native/host media backend per connected session. */
+  mediaEngine?: MediaEngineFactory;
+  /** Bound each native cleanup attempt. Default: 10 seconds. */
+  mediaCleanupTimeoutMs?: number;
 }
 
 /** One account configuration. Connect returns an independently owned UCWA session. */
@@ -40,8 +45,12 @@ export class SkypeForHoo {
     });
   }
 
-  async connect(application: ApplicationOptions = { userAgent: 'skypeforhoo/0.1.0' }, signal?: AbortSignal): Promise<UcwaSession> {
+  async connect(application: ApplicationOptions = { userAgent: 'skypeforhoo/0.2.0' }, signal?: AbortSignal): Promise<UcwaSession> {
     const discovery = await this.discover(signal);
-    return UcwaSession.create(this.transport, discovery.applicationsUrl, application, signal);
+    return UcwaSession.create(this.transport, discovery.applicationsUrl, application, signal, {
+      sipAddress: this.#options.sipAddress,
+      ...(this.#options.mediaEngine ? { mediaEngine: this.#options.mediaEngine } : {}),
+      ...(this.#options.mediaCleanupTimeoutMs === undefined ? {} : { mediaCleanupTimeoutMs: this.#options.mediaCleanupTimeoutMs }),
+    });
   }
 }

@@ -28,6 +28,7 @@ body using the underlying transport.
 | `presence()` | `me.presence` | GET |
 | `contactPresence(contact)` | `contact.contactPresence` | GET |
 | `setPresence(availability)` | `me.presence` | POST JSON; empty body resets |
+| `reportActivity()` | `me.reportMyActivity` | POST without body |
 | `makeAvailable(options)` | `me.makeMeAvailable` | POST JSON |
 | `startMessaging(options)` | `communication.startMessaging` | POST JSON |
 | `sendMessage(conversationOrMessaging, text)` | `messaging.sendMessage` | POST text/plain or text/html with operationId query |
@@ -37,10 +38,26 @@ body using the underlying transport.
 
 The SDK defaults `makeAvailable()` to the Messaging modality and Plain message
 format. Call it explicitly after starting an event consumer. A server may require
-an active event channel before accepting invitation operations. Audio/video,
-screen sharing, conference control, file transfer and Exchange integration are
-not implemented as media or product features; low-level links alone do not
-provide those features.
+an active event channel before accepting invitation operations. Advertise media
+modalities only when the host has a compatible backend and the deployment permits
+them. `reportActivity()` is available for actual user activity; the SDK does not
+automatically keep an inactive account online.
+
+`session.media` adds typed call signaling: start/add/stop audio or video, invitation
+answers and cancellation, participant mute controls, negotiation resources,
+sharing state, media policies, and relay credentials. Conditional native sharing
+extensions expose start/add/stop application sharing through exact advertised
+links. Their evidence and deployment limitations are documented in the
+[media guide](media.md). A supplied media engine implements capture, rendering,
+codecs, encryption and frame transport. This release does not bundle that engine.
+
+`session.screenSharing` checks the configured backend's account/conversation
+capabilities and manages sending a desktop/window or receiving a shared screen.
+Capabilities distinguish each direction and capture source. Absent support
+raises `UnsupportedMediaError`; successful signaling alone does not enable a
+media capability. Conference administration, file transfer and Exchange
+integration remain accessible through low-level resources where advertised;
+they are not complete product features in this release.
 
 ## Asynchronous messaging
 
@@ -66,23 +83,38 @@ a batch. Breaking the loop or throwing in a handler keeps that batch's previous
 cursor, so a new consumer can replay it. This provides an at-least-once boundary;
 applications should deduplicate message IDs and operations.
 
+If a media engine has already been initialized, its optional `handleEvents` hook
+runs before the batch is yielded. A failed hook preserves the same cursor for
+replay. Engine handlers must be idempotent and must not wait for a future batch.
+Ordinary messaging events do not initialize an unused media engine. Hosts using
+`session.events()` should not forward the same batch to the controller again.
+
 `eventCursor` exposes the last unacknowledged poll URL. Request errors, including
 HTTP 410, surface directly. The application can create a new `events()` consumer
 to retry the same cursor after a transient failure. A 410 generally requires
 recreating the application rather than repeatedly polling it. No write operation
 is silently retried.
 
-An external `AbortSignal` cancels that generator; `close()` aborts the session's
-in-flight poll and then deletes the application. Concurrent `close()` calls
-share one DELETE request. A 404 or 410 during DELETE means the registration is
-already gone. Other DELETE failures surface and a subsequent `close()` retries.
+An external `AbortSignal` cancels that generator. `close()` aborts the session's
+in-flight poll and media work, then starts native cleanup and application
+deletion concurrently. Concurrent `close()` calls share the same attempt. A 404
+or 410 during DELETE means the registration is already gone. Other DELETE or
+native cleanup failures surface and a subsequent `close()` retries.
+
+Native cleanup has a ten-second default deadline, configurable through
+`mediaCleanupTimeoutMs`. `MediaCleanupTimeoutError` reports unresolved work; it
+does not prove that capture or native resources have stopped. Late results still
+receive cleanup. The host can inspect managed shares and retry shutdown. The
+application's DELETE is sent independently of a stalled native backend.
 
 ## Verification limits
 
 Synthetic tests cover advertised URL following, creation metadata, UTF-8 message
-encoding, request methods and bodies, opaque event cursors, cancellation and
-shutdown. They do not prove successful authenticated interoperability with a
-particular Skype for Business deployment.
+and SDP encoding, request methods and bodies, opaque event cursors, backend
+event forwarding, capabilities, cancellation, late media results, cleanup
+deadlines and shutdown. They do not prove successful authenticated
+interoperability or media transmission with a particular Skype for Business
+deployment. macOS and Windows are the first native backend targets.
 
 ## Primary references
 

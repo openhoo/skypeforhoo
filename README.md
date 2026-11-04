@@ -1,21 +1,23 @@
 # skypeforhoo
 
-A TypeScript SDK for **Skype for Business Server / UCWA**. It provides automatic service discovery, pluggable authentication, UCWA application sessions, contacts, presence, instant messaging, and a resumable event stream.
+A TypeScript SDK for **Skype for Business Server / UCWA**. It provides automatic service discovery, pluggable authentication, UCWA application sessions, contacts, presence, instant messaging, a resumable event stream, and typed media signaling.
 
 The SDK follows links returned by the server. It also exposes resource operations for UCWA capabilities that do not have a convenience method.
 
 ## Status
 
-Version **0.1.0** is an initial interoperability release. Synthetic protocol tests exercise the supported flows. Public service discovery has been checked against a real deployment. **Authenticated enterprise login, message delivery, and calls have not yet been qualified against a real server.**
+Version **0.2.0** adds typed audio/video signaling, conditional application-sharing operations, and a lifecycle contract for an application-supplied media backend. Synthetic protocol tests exercise the supported flows. Public service discovery has been checked against a real deployment. **Authenticated enterprise login, message delivery, and native media have not yet been qualified against a real server.** The package does not bundle a media engine or transmit screen, camera, or audio frames by itself.
+
+See the [v0.2.0 release notes](docs/releases/v0.2.0.md) for the implementation and qualification record.
 
 Supported authentication includes supplied Bearer tokens and the documented on-premises `MsRtcOAuth` password grant. Deployments that use WebTicket/WS-Trust, Windows integrated authentication, AD FS, MFA, or another identity flow need a matching `AuthProvider`. Entering a username and password in an official client does not establish which token flow its server uses.
 
 ## Install
 
-Download the built package from the [GitHub release](https://github.com/openhoo/skypeforhoo/releases/tag/v0.1.0), or install its release asset directly:
+Download the built package from the [GitHub release](https://github.com/openhoo/skypeforhoo/releases/tag/v0.2.0), or install its release asset directly:
 
 ```sh
-npm install https://github.com/openhoo/skypeforhoo/releases/download/v0.1.0/skypeforhoo-0.1.0.tgz
+npm install https://github.com/openhoo/skypeforhoo/releases/download/v0.2.0/skypeforhoo-0.2.0.tgz
 ```
 
 The package is ESM, includes TypeScript declarations, and has **no runtime dependencies**. Node.js 22 or later is supported. Browser and desktop hosts can inject a Fetch-compatible transport; their CORS, authentication-header access, and native transport behavior need to be validated for the selected deployment.
@@ -83,6 +85,9 @@ const skype = new SkypeForHoo({
 | Presence | `me()`, `presence()`, `setPresence()`, `makeAvailable()` |
 | Chat | `startMessaging()`, `sendMessage()`, `setTyping()` |
 | Events | `events()`, `eventCursor`, cancellation and replay of unacknowledged batches |
+| Call signaling | `session.media.startAudio()`, `startVideo()`, `startAudioVideo()`, offers/answers, modality controls, policies, and relay resources |
+| Sharing signaling | `session.media.startApplicationSharing()`, `addApplicationSharing()`, `stopApplicationSharing()` when the exact relation is advertised |
+| Host media lifecycle | `session.screenSharing.capabilities()`, `supports()`, `startScreenSharing()`, `receiveScreenSharing()`, `stopScreenSharing()` |
 | More capabilities | `read()`, `follow()`, `invoke()`, `hasLink()`, `getLink()`, `getLinks()` |
 
 UCWA resource URLs and availability are account/server specific. A missing relation raises `MissingLinkError`; the SDK does not construct a guessed operation path. The [protocol guide](docs/protocol.md) describes verbs, payloads, event acknowledgement, and known limits.
@@ -110,7 +115,48 @@ await session.startMessaging({
 // Keep the session alive and match protocol events to operationId.
 ```
 
-Register pending operations before sending so a fast event cannot outrun your correlation state. Surface failed event polling and reconnect explicitly. `session.close()` aborts the current poll and deletes its UCWA application registration.
+Register pending operations before sending so a fast event cannot outrun your correlation state. Surface failed event polling and reconnect explicitly. If an initialized media backend implements `handleEvents()`, `session.events()` awaits that hook before yielding each batch; do not forward it again or create another poller. Backend and application handlers must tolerate replay. A media handler must complete processing the current batch without waiting for a future batch from this loop.
+
+`session.close()` aborts the current poll and attempts native media cleanup and UCWA application deletion concurrently. Cleanup or deletion failures are surfaced and can be retried by calling `close()` again.
+
+### Media signaling and a host backend
+
+`session.media` follows advertised operations and encodes engine-generated SDP. `session.screenSharing` manages a compatible backend's lifecycle. Supply the backend through the account configuration:
+
+```ts
+import { SkypeForHoo } from 'skypeforhoo';
+
+const skype = new SkypeForHoo({
+  sipAddress: 'person@example.com',
+  auth: accountAuth,
+  trustedOrigins: ['https://pool.example.com'],
+  mediaEngine: nativeMediaEngineFactory,
+  mediaCleanupTimeoutMs: 10_000,
+});
+```
+
+`accountAuth` is the host's `AuthProvider`; `nativeMediaEngineFactory` is its `MediaEngineFactory` implementation. The factory is lazy and account scoped. A capability query initializes it when the app needs to handle incoming media events. Once connected, use a conversation reference obtained from the session's resources or events:
+
+```ts
+const canShareWindow = await session.screenSharing.supports({
+  feature: 'screenSharing',
+  direction: 'send',
+  captureSource: 'window',
+}, conversation);
+if (!canShareWindow) throw new Error('Window sharing is unavailable for this account.');
+
+const share = await session.screenSharing.startScreenSharing(conversation, {
+  source: { kind: 'window' }, // The backend owns source selection and permissions.
+  signal: accountLifetime.signal,
+});
+// A real backend resolves startup after establishing the requested media.
+// When the user chooses Stop sharing:
+await share.stop();
+```
+
+Without a compatible backend, publishing and receiving raise `UnsupportedMediaError`. The backend owns capture, codecs, Skype-compatible transport, negotiation, rendering, and native resource cleanup. Its declarations must distinguish desktop publishing, window publishing, receiving, and remote control.
+
+The default media cleanup deadline is 10 seconds, configured through `mediaCleanupTimeoutMs`. It bounds controller close and stop-all attempts. `MediaCleanupTimeoutError` means native cleanup is still pending; it does not confirm that capture stopped. The [media guide](docs/media.md) describes the exact lifecycle, conditional wire contracts, and remaining backend work for macOS and Windows.
 
 ### Access additional advertised operations
 
@@ -138,11 +184,11 @@ The catalog helps navigate the public protocol. It does not claim that every ope
 - Cross-origin redirects obtain authorization for the new origin. Browser cookies and explicit `Cookie`/`Proxy-Authorization` headers are excluded.
 - Tokens and credentials remain in memory within the provider. The SDK has no credential files, global logs, or persistent token store.
 - The default timeout is 200 seconds to accommodate UCWA's documented 180-second event polls. Requests, authentication waits, and event consumption accept cancellation.
-- Call signaling can be explored through advertised UCWA links. Audio/video codecs, media transport, conferencing interoperability, screen sharing, and telephony are separate integrations.
+- Typed call and conditional sharing signaling use advertised UCWA links. Audio/video codecs, native media transport, capture/rendering, conferencing interoperability, and telephony require a compatible backend and deployment qualification.
 
 ## Future desktop application
 
-The planned application uses **Tauri + React + shadcn**, with separate `skypeforhoo` and Teamwire connectors. The [desktop design brief](docs/desktop-app.md) records modern chat UI references, official shadcn chat components, the connector boundary, and the distinction between Teamwire's bot SDK and a human-account connector.
+The planned **macOS and Windows** application uses **Tauri + React + shadcn**, with separate `skypeforhoo` and Teamwire connectors. The [desktop design brief](docs/desktop-app.md) records modern chat UI references, official shadcn chat components, the connector and native media boundaries, and the distinction between Teamwire's bot SDK and a human-account connector. The desktop app and Teamwire connector remain future implementation work.
 
 ## Develop
 
